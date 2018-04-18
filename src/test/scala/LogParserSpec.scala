@@ -3,6 +3,7 @@ package parser
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.{Row, SparkSession}
 import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
+import parser.LogParser._
 
 case class TestCase(timestamp: String, clientPort: String, request: String)
 
@@ -33,14 +34,35 @@ class LogParserSpec extends FlatSpec with Matchers with BeforeAndAfterAll with S
   "LogParser" should "generate new session ids and backfill session ids for when duration remains the same" in {
     val input = List(TestCase("2015-07-22T09:00:27.894580Z", "10.0.4.150:80", "GET https://paytm.com HTTP/1.1"),
       TestCase("2015-07-22T09:03:27.894580Z", "10.0.4.150:80", "GET https://paytm.com HTTP/1.1"),
-      TestCase("2015-07-22T09:30:27.894580Z", "10.0.4.150:80", "GET https://paytm.com HTTP/1.1"))
+      TestCase("2015-07-22T09:30:27.894580Z", "10.0.4.150:80", "GET https://paytm.com HTTP/1.1"), //same ip diff session
+      TestCase("2015-07-22T09:30:27.894580Z", "10.0.4.151:80", "GET https://paytm.com HTTP/1.1")) // diff ip
 
     val testDataset = getTestInput(input)
-    LogParser.addSessionId(testDataset, 15 * 60 * 1000)
+    val result = addSessionId(testDataset, 15 * 60 * 1000)
       .select("sessionId")
       .distinct()
       .collect()
-      .size should be (2)
+      .map{ r: Row => r.getString(0) }
+
+    result.length should be (3)
+
+    result.count(_.contains("10.0.4.150")) should be (2)
+    result.count(_.contains("10.0.4.151")) should be (1)
+  }
+
+  "LogParser" should "calculate session sizes correctly" in {
+    val input = List(TestCase("2015-07-22T09:00:27.894580Z", "10.0.4.150:80", "GET https://paytm.com HTTP/1.1"),
+      TestCase("2015-07-22T09:03:27.894580Z", "10.0.4.150:80", "GET https://paytm.com HTTP/1.1"),
+      TestCase("2015-07-22T09:30:27.894580Z", "10.0.4.150:80", "GET https://paytm.com HTTP/1.1"), //same ip diff session
+      TestCase("2015-07-22T09:30:27.894580Z", "10.0.4.151:80", "GET https://paytm.com HTTP/1.1")) // diff ip)
+
+    val testDataset = getTestInput(input)
+    addSessionSize(addSessionId(testDataset, 15 * 60 * 1000))
+      .orderBy(asc("sessionSize"))
+      .select("sessionSize")
+      .collect()
+      .map{ r: Row => r.getLong(0)}
+      .toList should be (List(0,0,180000))
   }
 
   private def getTestInput(input: List[TestCase]) = {

@@ -71,8 +71,7 @@ object LogParser extends App with DateTimeParser {
       .drop("oldDateMillis", "newSession", "filledSessionIds")
   }
 
-  val sessions = addSessionId(logs)
-    .cache()
+  val sessions = addSessionId(logs).cache()
 
   sessions
     .select("sessionId", "timestamp", "elb", "client:port", "backend:port", "request_processing_time", "backend_processing_time",
@@ -82,14 +81,16 @@ object LogParser extends App with DateTimeParser {
 
   //2. Determine the average session time
 
-  def getSessionSize  = udf { millisList: Seq[Long] => millisList.max - millisList.min}
+  def getSessionSize = udf { millisList: Seq[Long] => millisList.max - millisList.min}
 
-  val withSessionSize = sessions
+  def addSessionSize(input: DataFrame) = input
     .groupBy("sessionId")
-    .agg(collect_list("dateMillis").as("all_dateMillis"))
-    .withColumn("sessionSize", getSessionSize($"all_dateMillis"))
+    .agg(collect_list("dateMillis").as("allDateMillis"))
+    .withColumn("sessionSize", getSessionSize(col("allDateMillis")))
 
-  withSessionSize
+  val logsWithSessionSize: DataFrame = addSessionSize(sessions)
+
+  logsWithSessionSize
     .agg(avg("sessionSize").alias("avgSessionSize"))
     .select("avgSessionSize")
     .write.json(output+"/2/")
@@ -103,7 +104,7 @@ object LogParser extends App with DateTimeParser {
 
   //4. Find the most engaged users, ie the IPs with the longest session times
 
-  withSessionSize
+  logsWithSessionSize
     .orderBy(desc("sessionSize"))
     .write.json(output+"/4/")
 }
