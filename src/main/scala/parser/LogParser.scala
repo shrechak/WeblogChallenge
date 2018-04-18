@@ -16,8 +16,9 @@ trait DateTimeParser {
 
 object LogParser extends App with DateTimeParser {
   val cmdArgs = Args(args)
-  val timeWindow = cmdArgs.getOrElse("window-minutes", "15")
+  val input = cmdArgs.getOrElse("input", "data/2015_07_22_mktplace_shop_web_log_sample.log.gz")
   val output = cmdArgs.getOrElse("output", "/tmp/output-spark/")
+  val timeWindow = cmdArgs.getOrElse("window-minutes", "15")
 
   //define spark session
   val spark = SparkSession
@@ -34,7 +35,7 @@ object LogParser extends App with DateTimeParser {
 
   val logs = spark.read
     .option("delimiter", " ")
-    .csv("/Users/shreya/Desktop/WeblogChallenge/data/2015_07_22_mktplace_shop_web_log_sample.log")
+    .csv(input)
     .toDF("timestamp", "elb", "client:port", "backend:port", "request_processing_time", "backend_processing_time",
       "response_processing_time", "elb_status_code", "backend_status_code", "received_bytes", "sent_bytes",
       "request", "user_agent", "ssl_cipher", "ssl_protocol")
@@ -90,6 +91,7 @@ object LogParser extends App with DateTimeParser {
     .write.csv(output+"/3/")
 
   //4. Find the most engaged users, ie the IPs with the longest session times
+
   withSessionSize
     .orderBy(desc("sessionSize"))
     .write.csv(output+"/4/")
