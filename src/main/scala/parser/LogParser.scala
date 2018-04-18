@@ -1,8 +1,8 @@
 package parser
 
 import com.twitter.scalding.Args
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.joda.time.format.ISODateTimeFormat
 
 trait DateTimeParser {
@@ -29,9 +29,9 @@ object LogParser extends App with DateTimeParser {
 
   import spark.implicits._
 
-  val dateToMillis = udf { date: String => getMillis(date) }
-  val clientIP = udf { ipPortString: String => ipPortString.split(":").head }
-  val urlFromRequest = udf { request: String => request.split(" ")(1) }
+  def dateToMillis = udf { date: String => getMillis(date) }
+  def clientIP = udf { ipPortString: String => ipPortString.split(":").head }
+  def urlFromRequest = udf { request: String => request.split(" ")(1) }
 
   val logs = spark.read
     .option("delimiter", " ")
@@ -43,35 +43,45 @@ object LogParser extends App with DateTimeParser {
     .withColumn("clientIp", clientIP($"client:port"))
     .withColumn("url", urlFromRequest($"request"))
 
-  val duration = timeWindow.toInt*60*1000.0
+  val duration = timeWindow.toInt*60*1000
 
   //1. Sessionize the web log by IP. Sessionize = aggregrate all page hits by visitor/IP during a fixed time window.
 
   import org.apache.spark.sql.expressions.Window
   import org.apache.spark.sql.functions._
-  val byClientIp = Window.partitionBy($"clientIp").orderBy("dateMillis")
 
-  val sessions = logs
-    .withColumn("oldDateMillis", lag($"dateMillis", 1, 0).over(byClientIp))
-    //detecting when there is a new session in a client ip partition
-    .withColumn("newSession",
-      when(($"dateMillis" - $"oldDateMillis") > duration, floor(rand()*1000)))
-    ///backfilling session ids for cases when the session didnt change
-    .withColumn("filledSessionIds",
-      last($"newSession", true).over(Window.partitionBy($"clientIp").orderBy("dateMillis")))
-    //generating final session Id
-    .withColumn("sessionId", concat_ws("_", $"clientIp", lit("SESS"), $"filledSessionIds"))
+  def addSessionId(input: DataFrame, duration: Long = duration) = {
+    val byClientIp = Window.partitionBy(col("clientIp")).orderBy("dateMillis")
+
+    input
+      .withColumn("oldDateMillis", lag(col("dateMillis"), 1, 0).over(byClientIp))
+      //********* detecting when there is a new session in a client ip partition
+      .withColumn("newSession",
+        when((col("dateMillis") - col("oldDateMillis")) > duration, floor(rand()*1000))
+      )
+      .withColumn("x", col("dateMillis") - col("oldDateMillis"))
+      //********* backfilling session ids for cases when the session didnt change
+      .withColumn("filledSessionIds",
+        last(col("newSession"), true).over(Window.partitionBy(col("clientIp")).orderBy("dateMillis"))
+      )
+      //********* generating final session Id
+      .withColumn("sessionId",
+        concat_ws("_", col("clientIp"), lit("SESS"), col("filledSessionIds"))
+      )
+//      .drop("oldDateMillis", "newSession", "filledSessionIds")
+  }
+
+  val sessions = addSessionId(logs)
     .cache()
 
   sessions
     .select("sessionId", "timestamp", "elb", "client:port", "backend:port", "request_processing_time", "backend_processing_time",
       "response_processing_time", "elb_status_code", "backend_status_code", "received_bytes", "sent_bytes",
       "request", "user_agent", "ssl_cipher", "ssl_protocol")
-    .write.csv(output+"/1/")
+    .write.json(output+"/1/")
 
   //2. Determine the average session time
 
-  val bySessionId = Window.partitionBy($"sessionId").orderBy("dateMillis")
   def getSessionSize  = udf { millisList: Seq[Long] => millisList.max - millisList.min}
 
   val withSessionSize = sessions
@@ -80,19 +90,20 @@ object LogParser extends App with DateTimeParser {
     .withColumn("sessionSize", getSessionSize($"all_dateMillis"))
 
   withSessionSize
-    .agg(avg("sessionSize"))
-    .write.csv(output+"/2/")
+    .agg(avg("sessionSize").alias("avgSessionSize"))
+    .select("avgSessionSize")
+    .write.json(output+"/2/")
 
   //3.Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
 
   sessions
     .groupBy("sessionId")
     .agg(countDistinct("url"))
-    .write.csv(output+"/3/")
+    .write.json(output+"/3/")
 
   //4. Find the most engaged users, ie the IPs with the longest session times
 
   withSessionSize
     .orderBy(desc("sessionSize"))
-    .write.csv(output+"/4/")
+    .write.json(output+"/4/")
 }
