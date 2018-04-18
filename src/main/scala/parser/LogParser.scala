@@ -68,7 +68,7 @@ object LogParser extends App with DateTimeParser {
       .withColumn("sessionId",
         concat_ws("_", col("clientIp"), lit("SESS"), col("filledSessionIds"))
       )
-//      .drop("oldDateMillis", "newSession", "filledSessionIds")
+      .drop("oldDateMillis", "newSession", "filledSessionIds")
   }
 
   val sessions = addSessionId(logs)
